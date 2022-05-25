@@ -1,146 +1,165 @@
-#include <ESP8266WiFi.h>
-#include <DHT.h>  // there are multiple kinds of DHT sensors
-#include <FirebaseESP8266.h>
-#include <NTPClient.h>
-#include <WiFiUdp.h>
-#include <Wire.h>
-#include <SPI.h>
-#include <Adafruit_BMP280.h>
+#include <Wire.h>    // I2C library
+#include "ccs811.h"  // CCS811 library
+#include <BH1750.h>
+#include <ESP8266WiFi.h>      //for wifi connectivity
+#include <DHT.h>              //for Temp and Humidity Sensor Library
+#include <FirebaseESP8266.h>  //Library used to connect ESP8266 to Firebase
+#include <NTPClient.h>        //Network time protocol client, to get current time
+#include <WiFiUdp.h>          //UDP protocol to receive data for NTP client
+#include <Adafruit_BMP280.h>   //BMP sensor library
+#include <BH1750.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
+#define WIRE_HAS_END 1
+Adafruit_BMP280 bmp; //Declaring object for bmp sensor
+BH1750 light;
+Adafruit_SSD1306 oled(128, 64, &Wire, -1);
+CCS811 ccs811(0); // nWAKE on D3
+DHT dht(14,DHT22);         //d3=3 and sensor type
 
+WiFiUDP ntpUDP;         //UDP cliet for ntp
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 19800);     //declaring NTPclient object
+FirebaseData fbdo;                                        //firebase database object to write data
+FirebaseJson json;                                         //json objects to upload data as key-value pairs
 
-#define API_KEY "AIzaSyAvFnAIPZTPWjLfqFYmm-_cBk3bviU0Qm4"
-//#define DHTTYPE DHT22 //--> Defines the type of DHT sensor used (DHT11, DHT21, and DHT22), in this project the sensor used is DHT11.
-#define DATABASE_URL "https://signindemo-47c49-default-rtdb.firebaseio.com" 
-#define rainDigital 16
-
-Adafruit_BMP280 bmp; // I2C
-FirebaseData firebaseData;
-FirebaseData fbdo;
-FirebaseAuth auth;
-FirebaseConfig config;
-FirebaseJson json;
-FirebaseJson json2;
-unsigned long sendDataPrevMillis = 0;
-int count = 0;
-bool signupOK = false;
-const int DHTPin = 5; //--> The pin used for the DHT11 sensor is Pin D1 = GPIO5
-
-
-//
-DHT dht(0,DHT22);
-const char *ssid = "JioFiber-2G";
-const char *password = "11223344";
-const long utcOffsetInSeconds = 19800;
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
-
-WiFiClient client;
+   //to match the time zone of india
+String rf = "";
 
 void setup() {
+  // Enable serial
+  Serial.begin(9600);
+   // Enable CCS811
+  Wire.begin(); 
+  ccs811.set_i2cdelay(50); // Needed for ESP8266 because it doesn't handle I2C clock stretch correctly
+  ccs811.begin();
+  ccs811.start(CCS811_MODE_1SEC);
+
   
-//Connect to WiFi Network
-   Serial.begin(9600);
-   delay(500);
-   Serial.print("Connecting to WiFi");
-   Serial.println("...");
-   WiFi.begin(ssid, password);
-   int retries = 0;
-   while ((WiFi.status() != WL_CONNECTED) && (retries < 5)) 
-   {
-   retries++;
-   delay(500);
-    }
-if (retries > 14) {
-    Serial.println(F("WiFi connection FAILED"));
-}
-if (WiFi.status() == WL_CONNECTED) {
-    Serial.println(F("WiFi connected!"));
-    Serial.println("IP address: ");
-    Serial.println(WiFi.localIP());
-}
-
-
-Serial.println("Running DHT22");
-  Serial.println("-------------------------------------");
   dht.begin();
-
-
-
-  Serial.println("Running BMP280!");
-  Serial.println("-------------------------------------");
   bmp.begin(0x76);
+  light.begin();
+  oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+
   bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* Operating Mode. */
                   Adafruit_BMP280::SAMPLING_X2,     /* Temp. oversampling */
                   Adafruit_BMP280::SAMPLING_X16,    /* Pressure oversampling */
                   Adafruit_BMP280::FILTER_X16,      /* Filtering. */
                   Adafruit_BMP280::STANDBY_MS_500);
+
   
 
-  Serial.println("Running BMP280!");
-  Serial.println("-------------------------------------");
+  
 
-     /* Assign the api key (required) */
-  config.api_key = API_KEY;
-
-  /* Assign the RTDB URL (required) */
-  config.database_url = DATABASE_URL;
-
-  /* Sign up */
-  Serial.printf("Firebase Status :",Firebase.signUp(&config, &auth, "", ""));
-  if (Firebase.signUp(&config, &auth, "", "")){
-    Serial.println("Connected");
-    signupOK = true;
-  }
-  else{
-    Serial.printf("%s\n", config.signer.signupError.message.c_str());
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin("JioFiber-2G", "11223344"); 
+  int retries=0;
+  while ((WiFi.status() != WL_CONNECTED)&&retries<21)//waiting to connect to wifi till 10secs
+  {         
+    retries++;
+    delay(500);
+   }
+    
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("WiFi connected ! IP address :"+WiFi.localIP().toString());
+  }else{
+   Serial.println("WiFi connection FAILED");
   }
 
- timeClient.begin();
- Firebase.begin(&config, &auth);
-    Serial.println(F("Setup ready"));
+  Firebase.begin("https://weather-monitoring-56d1f-default-rtdb.firebaseio.com/", "Km0E6KCRw8AaACZBWI9VjRERRi9fVvuectdCYZyj");
 
 }
+
+
 void loop() {
-  
-  timeClient.update();
-int h = dht.readHumidity();
-int t = dht.readTemperature();
+  timeClient.update();            //updating time
+int h = dht.readHumidity();       
+int t1 = dht.readTemperature();
+int t2 = bmp.readTemperature();
+int t;
+if(t1>100){
+  t = t2;
+}else t = t1;
 int p = bmp.readPressure()/100;
-int a = bmp.readAltitude(1000);
+int a = bmp.readAltitude();
+int l = light.readLightLevel();
+int r = analogRead(A0);
+  if(r>800){
+    rf = "No Rain";
+  }else if(r<=800&&r>550)
+{
+  rf = "Light Rain";
+}else{
+
+  rf = "Heavy Rain";
+}
+
+ // Enable I2C
+   Wire.endTransmission();
+   Wire.begin(); 
+  uint16_t eco2, etvoc, errstat, raw;
+  ccs811.read(&eco2,&etvoc,&errstat,&raw); 
+
+
 String tm = String(timeClient.getHours())+":"+String(timeClient.getMinutes())+":"+String(timeClient.getSeconds());
-   Serial.println("-----------------------------------------------");
-Serial.println("Time = "+tm);
-
- String Temp = "Temperature : " + String(t) + " C";
-  String Humi = "Humidity : " + String(h) + " %";
-  String Pres = "Pressure : "+ String(p)+" hPa";
-  String Alti = "Altitude : "+String(a)+" m";
-  Serial.println(Temp);
-  Serial.println(Humi);
-  Serial.println(Pres);
-  Serial.println(Alti);
-  
-  //Firebase.reconnectWiFi(true);
-//
-//  Firebase.RTDB.setString(&fbdo,"/ESP8266/time",tm);
-//  Firebase.RTDB.setString(&fbdo, "/ESP8266/time/Humidity/value", h);
-
-  json.set("time",tm);
-  json.set("value",String(h));
-  json2.set("time",tm);
-  json2.set("value",String(t));
-  Firebase.RTDB.setJSON(&fbdo,"/ESP8266/Humidity",&json);
-  Firebase.RTDB.setJSON(&fbdo,"/ESP8266/Temperature",&json2);
 
 
-  delay(500);
+ String Temp = "Temp: " + String(t) + "C";
+  String Humi = "Hum: " + String(h) + "%";
+  String Pres = "Prss: "+ String(p)+"hPa";
+  String Alti = "Alt: "+String(a)+" m";
+  String Light = "LI: "+String(l)+"lux";
+  String Rain = "Rain: "+rf;
+  String Time = "Time= "+tm;
+  String CO2 = "CO2 : "+String(eco2)+"ppm";
+  String VOC = "VOC : "+String(etvoc)+"ppb";
+   Serial.println("-----------------------------------------------\n");
+  Serial.println(Time+"\n"+Temp+"\n"+Humi+"\n"+Pres+"\n"+Alti+"\n"+Light+"\n"+Rain+"\n"+CO2+"\n"+VOC);
 
+ 
 
+ 
+   oled.clearDisplay(); // clear display
+
+  oled.setTextSize(0.2);          // text size
+  oled.setTextColor(WHITE);     // text color
+  oled.setCursor(0, 0);        // position to display
+  oled.println(Time+"\n"+Temp+"  "+Humi+"\n"+Pres+"  "+Alti+"\n"+Light+"\n"+Rain+"\n"+CO2+"  "+VOC);
+ // text to display
+  oled.display();     
+ // oled.startscrolldiagright(0,0);// show on OLED
 
   
-  delay(2000);
 
+
+//creating JSON objects
+
+json.set("time",tm);
+json.set("Humidity",String(h));
+json.set("Temperature",String(t));
+json.set("Pressure",String(p));
+json.set("Altitude",String(a));
+json.set("Light",String(l));
+json.set("Rain",rf);
+json.set("CO2",String(eco2));
+json.set("VOC",String(etvoc));
+
+
+
+  //Uploading to firebase
+  
+  Firebase.RTDB.setJSON(&fbdo,"/ESP8266",&json);
+
+
+
+
+  //5 seconds delay for every reading
+  delay(5000);
+
+   
+  
 
   
+  // Wait
+  delay(1000); 
 }
